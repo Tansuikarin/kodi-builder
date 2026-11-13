@@ -1,0 +1,217 @@
+name: Build Kodi Android (32-bit ARM)
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: 'Android 应用包名 (修改 version.txt 中的 APP_PACKAGE，默认 org.xbmc.kodi)'
+        required: false
+        default: 'org.xbmc.kodi'
+        type: string
+      tag:
+        description: 'Kodi Git Tag 或分支名 (留空则拉取 master 最新 Nightly 版)'
+        required: false
+        default: ''
+        type: string
+
+env:
+  SDK_ROOT: ${{ runner.home }}/android-tools/android-sdk-linux
+  TARBALLS_DIR: ${{ runner.home }}/android-tools/xbmc-tarballs
+  DEPENDS_PREFIX: ${{ runner.home }}/android-tools/xbmc-depends
+  CCACHE_DIR: ${{ runner.home }}/.ccache
+
+jobs:
+  build:
+    name: Compile Kodi Android arm-v7a (32-bit)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Free up disk space on runner
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      - name: Set up JDK 17 (required by Gradle 8.0+)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf \
+            automake \
+            autopoint \
+            bison \
+            build-essential \
+            ccache \
+            cmake \
+            curl \
+            flex \
+            gawk \
+            gettext \
+            git \
+            gperf \
+            lib32stdc++6 \
+            lib32z1 \
+            lib32z1-dev \
+            libcurl4-openssl-dev \
+            libtool \
+            nasm \
+            pkg-config \
+            python3 \
+            unzip \
+            yasm \
+            zip \
+            zlib1g-dev
+
+      - name: Cache Android SDK & NDK
+        id: cache-android-sdk
+        uses: actions/cache@v4
+        with:
+          path: ~/android-tools/android-sdk-linux
+          key: android-sdk-37.0-ndk-28.2.13676358
+
+      - name: Install and configure Android SDK & NDK
+        if: steps.cache-android-sdk.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/android-tools/android-sdk-linux"
+          CMDLINETOOLS_URL=$(curl -fsSL https://developer.android.com/studio | grep -oE 'https://dl\.google\.com/android/repository/commandlinetools-linux-[0-9]+_latest\.zip' | head -n1 || true)
+          if [ -z "$CMDLINETOOLS_URL" ]; then
+            CMDLINETOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          fi
+          echo "Downloading: $CMDLINETOOLS_URL"
+          curl -fL "$CMDLINETOOLS_URL" -o /tmp/commandlinetools.zip
+          unzip -q /tmp/commandlinetools.zip -d "$HOME/android-tools/android-sdk-linux/"
+          rm -f /tmp/commandlinetools.zip
+
+          cd "$HOME/android-tools/android-sdk-linux/cmdline-tools/bin"
+          yes | ./sdkmanager --sdk_root="$HOME/android-tools/android-sdk-linux" --licenses || true
+          ./sdkmanager --sdk_root="$HOME/android-tools/android-sdk-linux" \
+            "platform-tools" \
+            "platforms;android-37.0" \
+            "build-tools;37.0.0" \
+            "ndk;28.2.13676358"
+
+      - name: Restore debug.keystore from Secret
+        run: |
+          mkdir -p "$HOME/.android"
+          if [ -z "${{ secrets.DEBUG_KEYSTORE }}" ]; then
+            echo "::error::未配置 DEBUG_KEYSTORE Secret！请先将 debug.keystore 进行 Base64 编码后添加到仓库 Secrets 中。"
+            exit 1
+          fi
+          echo "${{ secrets.DEBUG_KEYSTORE }}" | tr -d '\r\n ' | base64 -d > "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+          ls -lh "$HOME/.android/debug.keystore"
+
+      - name: Clone Kodi source code (xbmc/xbmc)
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -n "$TAG" ]; then
+            echo "Cloning Kodi tag/branch: $TAG"
+            git clone --depth 1 --branch "$TAG" https://github.com/xbmc/xbmc.git "${{ github.workspace }}/kodi"
+          else
+            echo "Cloning Kodi nightly (master branch)"
+            git clone --depth 1 https://github.com/xbmc/xbmc.git "${{ github.workspace }}/kodi"
+          fi
+          ln -sfn "${{ github.workspace }}/kodi" "$HOME/kodi"
+
+      - name: Update APP_PACKAGE in version.txt
+        run: |
+          PKG_NAME="${{ inputs.package_name }}"
+          if [ -n "$PKG_NAME" ] && [ "$PKG_NAME" != "org.xbmc.kodi" ]; then
+            echo "Updating APP_PACKAGE to: $PKG_NAME"
+            sed -i "s|^APP_PACKAGE .*|APP_PACKAGE ${PKG_NAME}|" "$HOME/kodi/version.txt"
+          fi
+          echo "=== version.txt ==="
+          cat "$HOME/kodi/version.txt"
+
+      - name: Cache xbmc-tarballs
+        uses: actions/cache@v4
+        with:
+          path: ~/android-tools/xbmc-tarballs
+          key: kodi-tarballs-arm32-${{ hashFiles('kodi/tools/depends/target/**/Makefile', 'kodi/tools/depends/native/**/Makefile') }}
+          restore-keys: |
+            kodi-tarballs-arm32-
+
+      - name: Cache prebuilt xbmc-depends (32-bit ARM)
+        id: cache-depends
+        uses: actions/cache@v4
+        with:
+          path: ~/android-tools/xbmc-depends
+          key: kodi-depends-arm32-${{ hashFiles('kodi/tools/depends/target/**', 'kodi/tools/depends/native/**', 'kodi/tools/depends/configure.ac', 'kodi/tools/depends/Makefile*') }}
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: kodi-ccache-arm32-${{ inputs.tag || 'master' }}-${{ github.run_id }}
+          restore-keys: |
+            kodi-ccache-arm32-${{ inputs.tag || 'master' }}-
+            kodi-ccache-arm32-
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: kodi-gradle-${{ hashFiles('kodi/tools/android/packaging/xbmc/gradle/**') }}
+          restore-keys: |
+            kodi-gradle-
+
+      - name: Configure and build tools/depends (32-bit arm-linux-androideabi)
+        run: |
+          mkdir -p "$HOME/.ccache" "$HOME/android-tools/xbmc-tarballs" "$HOME/android-tools/xbmc-depends"
+          ccache -M 3G
+          ccache -o compression=true
+          ccache -z
+
+          cd "$HOME/kodi/tools/depends"
+          ./bootstrap
+          ./configure \
+            --with-tarballs="$HOME/android-tools/xbmc-tarballs" \
+            --host=arm-linux-androideabi \
+            --with-sdk-path="$HOME/android-tools/android-sdk-linux" \
+            --prefix="$HOME/android-tools/xbmc-depends"
+
+          if [ "${{ steps.cache-depends.outputs.cache-hit }}" != "true" ]; then
+            make -j$(getconf _NPROCESSORS_ONLN) || make -j1
+          else
+            echo "Matched exact xbmc-depends cache, skipping full depends rebuild."
+          fi
+
+      # 第 6 步（Build binary add-ons）已按要求跳过
+
+      - name: Build Kodi (32-bit ARM)
+        run: |
+          cd "$HOME/kodi"
+          mkdir -p "$HOME/kodi-build"
+          make -C tools/depends/target/cmakebuildsys BUILD_DIR="$HOME/kodi-build"
+          cd "$HOME/kodi-build"
+          make -j$(getconf _NPROCESSORS_ONLN)
+
+      - name: Package APK
+        run: |
+          cd "$HOME/kodi-build"
+          make apk
+
+          mkdir -p "${{ github.workspace }}/output"
+          find "$HOME/kodi" -maxdepth 2 -name "*.apk" -exec cp -v {} "${{ github.workspace }}/output/" \;
+          ls -lh "${{ github.workspace }}/output/"
+          ccache -s
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kodi-android-arm32-${{ inputs.tag || 'nightly' }}
+          path: output/*.apk
+          if-no-files-found: error
+          retention-days: 14
