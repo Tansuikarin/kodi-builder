@@ -103,11 +103,11 @@ jobs:
       - name: Restore debug.keystore from Secret
         run: |
           mkdir -p "$HOME/.android"
-          if [ -z "${{ secrets.DEBUG_KEYSTORE }}" ]; then
-            echo "::error::未配置 DEBUG_KEYSTORE Secret！请先将 debug.keystore 进行 Base64 编码后添加到仓库 Secrets 中。"
+          if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "::error::未配置 KEYSTORE_BASE64 Secret！请先将 debug.keystore 进行 Base64 编码后添加到仓库 Secrets 中。"
             exit 1
           fi
-          echo "${{ secrets.DEBUG_KEYSTORE }}" | tr -d '\r\n ' | base64 -d > "$HOME/.android/debug.keystore"
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '\r\n ' | base64 -d > "$HOME/.android/debug.keystore"
           chmod 600 "$HOME/.android/debug.keystore"
           ls -lh "$HOME/.android/debug.keystore"
 
