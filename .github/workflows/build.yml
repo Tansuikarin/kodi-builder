@@ -202,7 +202,13 @@ jobs:
           make apk
 
           mkdir -p "${{ github.workspace }}/output"
-          find "$HOME/kodi" -maxdepth 2 -name "*.apk" -exec cp -v {} "${{ github.workspace }}/output/" \;
+          find -L "${{ github.workspace }}/kodi" -maxdepth 2 -name "*.apk" -exec cp -v {} "${{ github.workspace }}/output/" \;
+
+          # 如果源码根目录没找到，则从编译目录的 Gradle 输出路径兜底拷贝
+          if [ -z "$(ls -A "${{ github.workspace }}/output")" ]; then
+            find -L "$HOME/kodi-build" -path "*/outputs/apk/*" -name "*.apk" -exec cp -v {} "${{ github.workspace }}/output/" \;
+          fi
+
           ls -lh "${{ github.workspace }}/output/"
           ccache -s
 
